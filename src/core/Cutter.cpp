@@ -1046,6 +1046,7 @@ void CutterCore::startDebug()
     if (!currentlyDebugging) {
         offsetPriorDebugging = getOffset();
     }
+    currentlyOpenFile = getConfig("file.path");
     cmd("ood");
     emit registersChanged();
     if (!currentlyDebugging) {
@@ -1064,8 +1065,7 @@ void CutterCore::startEmulation()
         offsetPriorDebugging = getOffset();
     }
     // clear registers, init esil state, stack, progcounter at current seek
-    cmd("ar0; aei; aeim; aeip");
-    emit registersChanged();
+    cmd("aei; aeim; aeip");
     if (!currentlyDebugging || !currentlyEmulating) {
         // prevent register flags from appearing during debug/emul
         setConfig("asm.flags", false);
@@ -1076,6 +1076,7 @@ void CutterCore::startEmulation()
         emit changeDebugView();
         emit flagsChanged();
     }
+    emit registersChanged();
     emit stackChanged();
     emit refreshCodeViews();
 }
@@ -1111,7 +1112,16 @@ void CutterCore::stopDebug()
             cmd(QString("dp- %1; o %2; .ar-").arg(QString::number(currentlyAttachedToPID), currentlyOpenFile));
             currentlyAttachedToPID = -1;
         } else {
-            cmd("dk 9; oo; .ar-");
+            cmd(QString("dk 9; e cfg.debug=false; o %1; .ar-").arg(currentlyOpenFile));
+            // close ptrace file descriptors left open
+            QJsonArray openFilesArray = cmdj("oj").array();;
+            for (QJsonValue value : openFilesArray) {
+                QJsonObject openFile = value.toObject();
+                QString URI = openFile["uri"].toString();
+                if (URI.contains("ptrace")) {
+                    cmd("o-" + QString::number(openFile["fd"].toInt()));
+                }
+            }
         }
         seek(offsetPriorDebugging);
         setConfig("asm.flags", true);
@@ -1120,6 +1130,13 @@ void CutterCore::stopDebug()
         emit flagsChanged();
         emit changeDefinedView();
     }
+}
+
+void CutterCore::syncAndSeekProgramCounter()
+{
+    QString programCounterValue = cmd("dr?`drn PC`").trimmed();
+    seek(programCounterValue);
+    emit registersChanged();
 }
 
 void CutterCore::continueDebug()
@@ -1144,6 +1161,7 @@ void CutterCore::continueUntilDebug(QString offset)
             cmd("dcu " + offset);
         }
         emit registersChanged();
+        emit stackChanged();
         emit refreshCodeViews();
     }
 }
@@ -1156,9 +1174,7 @@ void CutterCore::continueUntilCall()
         } else {
             cmd("dcc");
         }
-        QString programCounterValue = cmd("dr?`drn PC`").trimmed();
-        seek(programCounterValue);
-        emit registersChanged();
+        syncAndSeekProgramCounter();
     }
 }
 
@@ -1170,29 +1186,31 @@ void CutterCore::continueUntilSyscall()
         } else {
             cmd("dcs");
         }
-        QString programCounterValue = cmd("dr?`drn PC`").trimmed();
-        seek(programCounterValue);
-        emit registersChanged();
+        syncAndSeekProgramCounter();
     }
 }
 
 void CutterCore::stepDebug()
 {
     if (currentlyDebugging) {
-        cmdEsil("ds");
-        QString programCounterValue = cmd("dr?`drn PC`").trimmed();
-        seek(programCounterValue);
-        emit registersChanged();
+        if (currentlyEmulating) {
+            cmdEsil("aes");
+        } else {
+            cmd("ds");
+        }
+        syncAndSeekProgramCounter();
     }
 }
 
 void CutterCore::stepOverDebug()
 {
     if (currentlyDebugging) {
-        cmdEsil("dso");
-        QString programCounterValue = cmd("dr?`drn PC`").trimmed();
-        seek(programCounterValue);
-        emit registersChanged();
+        if (currentlyEmulating) {
+            cmdEsil("aeso");
+        } else {
+            cmd("dso");
+        }
+        syncAndSeekProgramCounter();
     }
 }
 
@@ -1200,9 +1218,7 @@ void CutterCore::stepOutDebug()
 {
     if (currentlyDebugging) {
         cmd("dsf");
-        QString programCounterValue = cmd("dr?`drn PC`").trimmed();
-        seek(programCounterValue);
-        emit registersChanged();
+        syncAndSeekProgramCounter();
     }
 }
 
